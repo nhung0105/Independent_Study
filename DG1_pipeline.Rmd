@@ -1,0 +1,514 @@
+---
+title: "log2fold_test"
+author: "Nhung"
+date: "2025-11-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Converting tabular to xlsx
+```{r}
+
+
+library(writexl)
+
+# read the .tabular file (tab-delimited)
+df <- read.table(
+  "DR_T08_vs_T32.tabular",
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE
+)
+
+# write to Excel
+write_xlsx(df, "DR_T08_vs_T32.xlsx")
+
+```
+
+
+
+#filter out DG1 and their values and generate different xlsx files
+
+```{r}
+
+library(readxl)
+library(dplyr)
+
+# read the Excel file
+df <- read_excel("DR_T00_vs_T032.xlsx")
+
+library(writexl)
+
+# ---- 1. DG1 gene list ----
+
+ target_genes <- c(
+  "cds-WP_020477804.1",
+  "cds-WP_011556248.1",
+  "cds-WP_011556701.1",
+  "cds-WP_020478578.1",
+  "cds-WP_020477869.1",
+  "cds-WP_011555161.1",
+  "cds-WP_020477824.1",
+  "cds-WP_043612819.1",
+  "cds-WP_011557151.1",
+  "cds-WP_020478280.1",
+  "cds-WP_225909290.1",
+  "cds-WP_011557314.1",
+  "cds-WP_011550772.1",
+  "cds-WP_225909484.1",
+  "cds-WP_020477608.1",
+  "cds-WP_011557215.1",
+  "cds-WP_011552321.1",
+  "cds-WP_011552099.1",
+  "cds-WP_011556942.1",
+  "cds-WP_020478269.1",
+  "cds-WP_176973856.1",
+  "cds-WP_225909803.1",
+  "cds-WP_011551635.1",
+  "cds-WP_225909323.1",
+  "cds-WP_011556785.1",
+  "cds-WP_011555503.1",
+  "cds-WP_011555247.1",
+  "cds-WP_216608954.1",
+  "cds-WP_011556786.1",
+  "cds-WP_020479128.1",
+  "cds-WP_216609049.1",
+  "cds-WP_011553929.1",
+  "cds-WP_011556787.1",
+  "cds-WP_011555807.1",
+  "cds-WP_011555809.1",
+  "cds-WP_011552442.1",
+  "cds-WP_043662122.1",
+  "cds-WP_011551767.1"
+)
+
+
+
+# extract only rows with gene_id in target_genes
+filtered_df <- df %>%
+  filter(gene_id %in% target_genes)
+
+# save file
+
+write_xlsx(
+  filtered_df,
+  "DR_T00_vs_T032_DG4.xlsx"
+)
+
+
+```
+
+#Merging files 
+I merge all three files (WT, DA, DR) for comparative analysis
+```{r}
+library(readxl)
+library(dplyr)
+
+# --- file paths ---
+da_file <- "DA_T08_vs_T32.xlsx"
+dr_file <- "DR_T08_vs_T32.xlsx"
+wt_file <- "WT_T08_vs_T32.xlsx"
+
+# --- helper: keep + rename columns for one contrast ---
+prep_res <- function(path, prefix) {
+  read_excel(path) %>%
+    select(gene_id, normalized_counts, log2_fc, p_value_adj) %>%
+    rename(
+      !!paste0("norm_", prefix) := normalized_counts,
+      !!paste0("log2fc_", prefix) := log2_fc,
+      !!paste0("padj_", prefix) := p_value_adj
+    )
+}
+
+# --- read + prep each result table ---
+da <- prep_res(da_file, "DA_T08_T32")
+dr <- prep_res(dr_file, "DR_T08_T32")
+wt <- prep_res(wt_file, "WT_T08_T32")
+
+# --- merge all three (keeps all genes across files) ---
+merged <- da %>%
+  full_join(dr, by = "gene_id") %>%
+  full_join(wt, by = "gene_id")
+
+# --- sanity checks ---
+dim(merged)
+head(merged)
+colSums(is.na(merged))  # count missing values per column
+```
+
+
+#labeling genes (Up/down and if it's significant (TRUE/FALSE))
+After merging the DESeq2 results, I add a labeling step in the same script to mark each gene as significantly changed or not in each comparison using adjusted p-values.
+
+```{r}
+
+# --- thresholds (edit) ---
+padj_cutoff <- 0.05
+lfc_cutoff  <- 1   # set to 0 if you only want padj-based labeling
+
+
+merged <- merged %>%
+  mutate(
+    across(
+      starts_with("log2fc_"),
+      ~ as.numeric(.)
+    ),
+    across(
+      starts_with("padj_"),
+      ~ as.numeric(.)
+    )
+  )
+
+
+merged_labeled <- merged %>%
+  mutate(
+    # Boolean flags: significant change (padj + abs(log2fc))
+    changed_DA_T08_T32 = !is.na(padj_DA_T08_T32) &
+                         padj_DA_T08_T32 < padj_cutoff &
+                         !is.na(log2fc_DA_T08_T32) &
+                         abs(log2fc_DA_T08_T32) >= lfc_cutoff,
+
+    changed_DR_T08_T32 = !is.na(padj_DR_T08_T32) &
+                         padj_DR_T08_T32 < padj_cutoff &
+                         !is.na(log2fc_DR_T08_T32) &
+                         abs(log2fc_DR_T08_T32) >= lfc_cutoff,
+
+    changed_WT_T08_T32   = !is.na(padj_WT_T08_T32) &
+                         padj_WT_T08_T32 < padj_cutoff &
+                         !is.na(log2fc_WT_T08_T32) &
+                         abs(log2fc_WT_T08_T32) >= lfc_cutoff,
+
+    # Optional direction labels: Up / Down / NS
+    label_DA_T08_T32 = case_when(
+      changed_DA_T08_T32 & log2fc_DA_T08_T32 > 0 ~ "Up",
+      changed_DA_T08_T32 & log2fc_DA_T08_T32 < 0 ~ "Down",
+      TRUE                                       ~ "NS"
+    ),
+    label_DR_T08_T32 = case_when(
+      changed_DR_T08_T32 & log2fc_DR_T08_T32 > 0 ~ "Up",
+      changed_DR_T08_T32 & log2fc_DR_T08_T32 < 0 ~ "Down",
+      TRUE                                       ~ "NS"
+    ),
+    label_WT08_WT32 = case_when(
+      changed_WT_T08_T32 & log2fc_WT_T08_T32 > 0 ~ "Up",
+      changed_WT_T08_T32 & log2fc_WT_T08_T32 < 0 ~ "Down",
+      TRUE                                   ~ "NS"
+    ),
+
+    # Optional: any contrast significant
+    changed_any = changed_DA_T08_T32 | changed_DR_T08_T32 | changed_WT_T08_T32 
+  )
+
+
+# --- save merged tables ---
+write.csv(merged, "08_32_Merged.csv", row.names = FALSE)
+write.csv(merged_labeled, "08_32_Merged_labeled.csv", row.names = FALSE)
+```
+
+
+#Categorized the genes (rescued/non-rescued/rescue-specific genes based on the above steps)
+
+This code classifies genes based on differential expression and rescue behavior across conditions. It first sets significance thresholds (adjusted p-value < 0.05 and |log2 fold change| ≥ 1) and ensures all fold-change and p-value columns are numeric. For each comparison (ΔAK, ΔAR, and WT), it flags whether a gene is significantly changed. Genes are then categorized as Rescued if they are significant in ΔAK but not in ΔAR and show a reduced fold-change in the same direction, Not-rescued if they remain significant in both ΔAK and ΔAR, Rescue-specific if they are only significant in ΔAR, or Other otherwise. The final step counts how many genes fall into each category.
+
+```{r}
+padj_cutoff <- 0.05
+lfc_cutoff  <- 1
+
+merged_classified <- merged %>%
+  mutate(
+    across(starts_with("log2fc_"), as.numeric),
+    across(starts_with("padj_"), as.numeric),
+
+    changed_DA_T08_T32 = !is.na(padj_DA_T08_T32) & padj_DA_T08_T32 < padj_cutoff &
+                         !is.na(log2fc_DA_T08_T32) & abs(log2fc_DA_T08_T32) >= lfc_cutoff,
+
+    changed_DR_T08_T32 = !is.na(padj_DR_T08_T32) & padj_DR_T08_T32 < padj_cutoff &
+                         !is.na(log2fc_DR_T08_T32) & abs(log2fc_DR_T08_T32) >= lfc_cutoff,
+
+    changed_WT_T08_T32   = !is.na(padj_WT_T08_T32) & padj_WT_T08_T32 < padj_cutoff &
+                         !is.na(log2fc_WT_T08_T32) & abs(log2fc_WT_T08_T32) >= lfc_cutoff
+  ) %>%
+  mutate(
+    rescue_class = case_when(
+      # Rescued: significant in ΔAK, NOT significant in ΔAR,
+      # and ΔAR magnitude smaller AND same direction (toward WT without reversal)
+      changed_DA_T08_T32 &
+      !changed_DR_T08_T32 &
+      !is.na(log2fc_DR_T08_T32) &
+      abs(log2fc_DR_T08_T32) < abs(log2fc_DA_T08_T32) &
+      (log2fc_DR_T08_T32 * log2fc_DA_T08_T32 > 0) ~ "Rescued",
+
+      # Not-rescued: significant in ΔAK and still significant in ΔAR
+      changed_DA_T08_T32 & changed_DR_T08_T32 ~ "Not-rescued",
+
+      # Rescue-specific: NOT significant in ΔAK but significant in ΔAR
+      !changed_DA_T08_T32 & changed_DR_T08_T32 ~ "Rescue-specific",
+
+      TRUE ~ "Other"
+    )
+  )
+
+
+summary_table <- merged_classified %>%
+  count(rescue_class)
+
+summary_table
+
+```
+
+Rescued:
+The gene is significantly changed in ΔAK but not in ΔAR, and the ΔAR fold change is smaller and in the same direction. This means the ΔAR condition partially reverses the ΔAK effect, bringing expression closer to wild type. (reverts back to WT)
+
+Not-rescued:
+The gene is significantly changed in both ΔAK and ΔAR. The expression change persists, so ΔAR does not correct the ΔAK-associated effect.
+
+Rescue-specific:
+The gene is not significantly changed in ΔAK but becomes significant in ΔAR. This indicates a new effect introduced by ΔAR, rather than a correction of ΔAK.
+
+Other:
+Any gene that does not clearly fit the above patterns (e.g., weak changes, missing values, or inconsistent behavior).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+library(readxl)
+library(dplyr)
+library(janitor)
+library(stringr)
+library(writexl)
+
+# NOTE: assumes target_genes is already defined somewhere above
+
+# Automatically find files that look like "num_num.xlsx" (e.g., "0_6.xlsx", "24_96.xlsx")
+files <- list.files(pattern = "^[0-9]+_[0-9]+\\.xlsx$")
+
+cat("Found files:\n")
+print(files)
+
+# Loop over each timepoint file
+for (file in files) {
+  cat("\nProcessing:", file, "\n")
+  
+  # read + clean
+  df <- read_excel(file) |>
+    janitor::clean_names()
+  
+  # detect correct tag column
+  possible_cols <- c("gene_locus_tag", "locus_tag", "gene_id", "preferred_gene")
+  tag_col <- intersect(possible_cols, names(df))
+  if (length(tag_col) == 0) {
+    warning("No valid locus tag column found in ", file)
+    next
+  }
+  tag_col <- tag_col[1]
+  
+  # filter to DG genes of interest
+  dg1 <- df |>
+    dplyr::filter(.data[[tag_col]] %in% target_genes)
+  
+  # select columns safely
+  cols_to_keep <- intersect(c(
+    "gene_id","wp_id","preferred_gene","gene_symbol",
+    "gene_locus_tag","gene_old_locus_tag","gene_product",
+    "mean_normalize_counts","log2fc","log2fc_se",
+    "wald_statistics","pvalue","p_adj","locus_tag"
+  ), names(df))
+  
+  dg1 <- dg1 |>
+    dplyr::select(dplyr::all_of(cols_to_keep))
+  
+  # save with timepoint + DG4 in the name, e.g. "24_96 DG9.xlsx"
+  output_name <- paste0(stringr::str_remove(file, "\\.xlsx$"), " DG9.xlsx")
+  write_xlsx(dg1, output_name)
+  
+  cat("✅ Created:", output_name, "\n")
+}
+```
+
+
+
+
+#combine these DG1 individual files together, add a 'timepoint' column to the very first position
+
+
+```{r}
+library(purrr)
+
+# 1) Find all DG4 files
+
+files_dg4 <- list.files(pattern = "DG8\\.xlsx$")
+
+# 2) Define the target schema
+
+char_cols <- c(
+"gene_id","wp_id","preferred_gene","gene_symbol",
+"gene_locus_tag","gene_old_locus_tag","gene_product","locus_tag"
+)
+num_cols <- c(
+"mean_normalize_counts","log2fc","log2fc_se",
+"wald_statistics","pvalue","p_adj"
+)
+all_cols <- c(char_cols, num_cols)
+
+# 3) Helper: read one DG4 file, standardize names & types, add timepoint
+
+read_one <- function(path) {
+
+# e.g. "0_6 DG4.xlsx" -> "0_6"
+
+tp <- str_remove(basename(path), "\\s*DG8\\.xlsx$")
+
+df <- read_excel(path) |>
+clean_names()
+
+# Normalize any "wald..." column to 'wald_statistics'
+
+wald_col <- names(df)[grepl("^wald", names(df))]
+if (length(wald_col) > 0) {
+df <- df |> rename(wald_statistics = all_of(wald_col[1]))
+}
+
+# Ensure all expected columns exist
+
+missing_char <- setdiff(char_cols, names(df))
+missing_num  <- setdiff(num_cols,  names(df))
+if (length(missing_char)) df[missing_char] <- NA_character_
+if (length(missing_num))  df[missing_num]  <- NA_real_
+
+# Coerce to target types
+
+df <- df |>
+mutate(across(all_of(char_cols), as.character)) |>
+mutate(across(all_of(num_cols), ~ suppressWarnings(as.numeric(.)))) |>
+mutate(timepoint = tp, .before = 1) |>
+select(timepoint, all_of(all_cols))
+
+df
+}
+
+# 4) Read and bind all DG4 files
+
+combined <- map_dfr(files_dg4, read_one)
+
+# 5) Save combined table
+
+writexl::write_xlsx(combined, "DG8_all_timepoints.xlsx")
+readr::write_csv(combined, "DG8_all_timepoints.csv")
+
+
+
+
+```
+
+Compute the final dataset
+```{r}
+
+library(readxl)
+library(dplyr)
+library(janitor)
+library(stringr)
+library(writexl)
+
+input_file  <- "DG1_all_timepoints.xlsx"
+output_file <- "DG1_all_timepoints_corrected.xlsx"
+
+# ========================
+# 1. Read & clean
+# ========================
+df <- read_excel(input_file, guess_max = 100000) |> 
+  clean_names()
+
+# ========================
+# 2. Identify log2FC and p-adjusted columns
+# ========================
+log2fc_col <- names(df)[str_detect(names(df), "^log2fc$|^log2_fold_change$|^lfc$")][1]
+padj_col   <- names(df)[str_detect(names(df), "^p_adj$|^padj$|^p_value_adj$")][1]
+
+# Convert to numeric
+df[[log2fc_col]] <- suppressWarnings(as.numeric(df[[log2fc_col]]))
+df[[padj_col]]   <- suppressWarnings(as.numeric(df[[padj_col]]))
+
+# ========================
+# 3. Flip the sign
+# ========================
+df <- df %>%
+  mutate(
+    log2fc_flipped = -!!sym(log2fc_col)
+  )
+
+# ========================
+# 4. Classify using flipped values
+# ========================
+lfc_thr  <- 1
+padj_thr <- 0.05
+
+df <- df %>%
+  mutate(
+    regulation_flipped = case_when(
+      log2fc_flipped >=  lfc_thr & .data[[padj_col]] <= padj_thr ~ "Up",
+      log2fc_flipped <= -lfc_thr & .data[[padj_col]] <= padj_thr ~ "Down",
+      TRUE ~ "NS"
+    )
+  )
+
+# ========================
+# 5. Save output
+# ========================
+write_xlsx(df, output_file)
+
+cat("✅ Sign flipped + regulation assigned. Saved to:", output_file, "\n")
+
+
+```
+
+
+#Checking if the gene is significantly up/downregulated based on log2fc values and P-values
+
+```{r}
+df_global <- df %>%
+  group_by(gene_id, preferred_gene) %>%
+  summarise(
+    mean_log2fc = mean(log2fc_flipped, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(global_direction = ifelse(mean_log2fc > 0, "Globally Up", "Globally Down"))
+
+table(df_global$global_direction)
+
+  
+
+```
+
+
+
+
+
+
+
+
+
+
+
